@@ -648,19 +648,16 @@
                     initState();
                 }
             },
-            val : function (callback) {
-                if (_.isString(callback)) {
+            val : function (value) {
+                if (_.isString(value)) {
                     var removedTags = _.uniq(_.map(tagsCollection, function (tagPos) { return tagPos[3]; }));
                     elEditor.trigger('tagsRemoved.textntags', [removedTags]);
-                    elEditor.val(callback);
+                    elEditor.val(value);
                     initState();
                     return;
-                } else if (!_.isFunction(callback)) {
-                    return;
+                } else {
+                    return tagsCollection.length ? getTaggedText() : getEditorValue();
                 }
-
-                var value = tagsCollection.length ? getTaggedText() : getEditorValue();
-                callback.call(this, value);
             },
             reset : function () {
                 var removedTags = _.uniq(_.map(tagsCollection, function (tagPos) { return tagPos[3]; }));
@@ -669,25 +666,15 @@
                 tagsCollection = [];
                 updateBeautifier();
             },
-            getTags : function (callback) {
-                if (!_.isFunction(callback)) {
-                    return;
-                }
+            getTags : function () {
                 var tags = _.map(tagsCollection, function (tagPos) { return tagPos[3]; });
 
-                callback.call(this, _.uniq(tags));
+                return _.uniq(tags);
             },
-            getTagsMap : function (callback) {
-                if (!_.isFunction(callback)) {
-                    return;
-                }
-
-                callback.call(this, tagsCollection);
+            getTagsMap : function () {
+                return tagsCollection;
             },
-            getTagsMapFacebook : function (callback) {
-                if (!_.isFunction(callback)) {
-                    return;
-                }
+            getTagsMapFacebook : function () {
 				var fbTagsCollection = {}, triggers = settings.triggers;
 					
 				_.each(tagsCollection, function (tagPos) {
@@ -702,14 +689,10 @@
 					}];
 				});
 
-                callback.call(this, fbTagsCollection);
+                return fbTagsCollection;
             },
-            parseTaggedText: function (tagged_text, callback) {
-                if (!_.isFunction(callback)) {
-                    return;
-                }
-                
-                callback.call(this, parseTaggedText(tagged_text));
+            parseTaggedText: function (tagged_text) {
+                return parseTaggedText(tagged_text);
             }
         };
     };
