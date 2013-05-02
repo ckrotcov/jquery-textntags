@@ -3,14 +3,20 @@
  * Version 0.1.2
  * Written by: Daniel Zahariev
  *
- * Dependencies: jQuery, underscore.js
+ * Dependencies: jQuery, jQuery.widget(), underscore.js
  *
  * License: MIT License - http://www.opensource.org/licenses/mit-license.php
  */
 (function ($, _, undefined) {
 
     // Keys "enum"
-    var KEY = { V: 86, Z: 90, BACKSPACE : 8, TAB : 9, RETURN : 13, ESC : 27, LEFT : 37, UP : 38, RIGHT : 39, DOWN : 40, COMMA : 188, SPACE : 32, HOME : 36, END : 35, 'DELETE': 46 };
+    var KEY = {
+        V: 86, Z: 90, BACKSPACE: 8, TAB: 9, RETURN: 13, ESC: 27, LEFT: 37, UP: 38,
+        RIGHT: 39, DOWN: 40, COMMA: 188, SPACE: 32, HOME: 36, END: 35, 'DELETE': 46
+    };
+
+    var REGEX_ESCAPE_CHARS = ['[', '^', '$', '.', '|', '?', '*', '+', '(', ')', '\\'];
+
     var defaultSettings = {
         onDataRequest   : $.noop,
         realValOnSubmit : true,
@@ -25,6 +31,7 @@
             tagsListItemIcon  : _.template('<div class="icon <%= no_img_class %>"></div>')
         }
     };
+
     var trigger_defaults = {
         minChars        : 2,
         uniqueTags      : true,
@@ -123,103 +130,107 @@
         }
     };
     
-    var TextNTags = function (editor) {
-        var settings = null, templates;
-        var elContainer, elEditor, elBeautifier, elTagList, elTagListItemActive;
-        var tagsCollection;
-        var currentTriggerChar, currentDataQuery, currentTagPosition = 0;
-        var editorSelectionLength = 0, editorTextLength = 0, editorKeyCode = 0, editorAddingTag = false;
-        var editorInPasteMode = false, editorPasteStartPosition = 0, editorPasteCutCharacters = 0;
-        var REGEX_ESCAPE_CHARS = ['[', '^', '$', '.', '|', '?', '*', '+', '(', ')', '\\'];
-        
-        function setSettings (options) {
-            if (settings != null) {
-                return false;
-            }
-            
-            settings = $.extend(true, {}, defaultSettings, options);
-            delete settings.triggers[''];
-            _.each(settings.triggers, function (val, key) {
-                settings.triggers[key] = $.extend(true, {}, trigger_defaults, val);
-                if (_.find(REGEX_ESCAPE_CHARS, function(character){ return character === key })) {
+    function beautifiedReplace(text) {
+        return text.replace(/\n/g, '<br />&shy;').replace(/ {2}/g, ' &nbsp;');
+    }
+
+    function pushDiffText(text, diff_text, currentTagPosition, startPosition, endPosition) {
+        if (currentTagPosition >= startPosition && currentTagPosition < endPosition) {
+            text.push(beautifiedReplace(_.escape(diff_text.substr(0, currentTagPosition - startPosition))),
+                      '<span class="textntags-caret-position"></span>',
+                      beautifiedReplace(_.escape(diff_text.substr(currentTagPosition - startPosition))));
+        } else {
+            text.push(beautifiedReplace(_.escape(diff_text)));
+        }
+    }
+
+    $.widget('ui.textntags', {
+        version: '0.1.2',
+        options: defaultSettings,
+
+        currentTagPosition: 0,
+        editorSelectionLength: 0,
+        editorTextLength: 0,
+        editorKeyCode: 0,
+        editorAddingTag: false,
+        editorInPasteMode: false,
+        editorPasteStartPosition: 0,
+        editorPasteCutCharacters: 0,
+
+        _create: function () {
+            var triggers = this.options.triggers;
+
+            _.each(triggers, function (val, key) {
+                triggers[key] = $.extend(true, {}, trigger_defaults, val);
+                if (REGEX_ESCAPE_CHARS.indexOf(key) > 0) {
                   var regex_key = "\\" + key;
                 } else {
                   var regex_key = key;
                 }
-                settings.triggers[key].finder = new RegExp(regex_key + '\\w+(\\s+\\w+)?\\s?$', 'gi');
-            });
-            
-            templates = settings.templates;
-            
-            return true;
-        }
-        
-        function initTextarea () {
-            elEditor = $(editor).bind({
-                click:    onEditorClick,
-                keydown:  onEditorKeyDown,
-                keypress: onEditorKeyPress,
-                keyup:    onEditorKeyUp,
-                input:    onEditorInput,
-                blur:     onEditorBlur
+                // FIXME: makes stupid assumption
+                triggers[key].finder = new RegExp(regex_key + '\\w+(\\s+\\w+)?\\s?$', 'gi');
             });
 
-            elContainer = elEditor.wrapAll($(templates.wrapper())).parent();
+            this.elEditor = this.element;
+            this._on({
+                click:    this._onEditorClick,
+                keydown:  this._onEditorKeyDown,
+                keypress: this._onEditorKeyPress,
+                keyup:    this._onEditorKeyUp,
+                input:    this._onEditorInput,
+                blur:     this._onEditorBlur
+            });
+
+            this.elContainer = this.elEditor.wrapAll($(this.options.templates.wrapper())).parent();
             
-            if (settings.realValOnSubmit) {
-                elEditor.closest('form').bind('submit.textntags', function (event) {
-                    elContainer.css('visibility', 'hidden');
-                    elEditor.val(getTaggedText());
+            if (this.options.realValOnSubmit) {
+                this._on(this.elEditor.closest('form'), {
+                    'submit.textntags': function (event) {
+                        this.elContainer.css('visibility', 'hidden');
+                        this.elEditor.val(getTaggedText());
+                    }
                 });
             }
-        }
-        
-        function initTagList () {
-            elTagList = $(templates.tagList());
-            elTagList.appendTo(elContainer);
-            elTagList.delegate('li', 'click', onTagListItemClick);
-        }
-        
-        function initBeautifier () {
-            elBeautifier = $(templates.beautifier());
-            elBeautifier.prependTo(elContainer);
-        }
-        
-        function initState () {
-            var text_with_tags = getEditorValue(), initialState = parseTaggedText(text_with_tags);
-            tagsCollection = initialState.tagsCollection;
-            elEditor.val(initialState.plain_text);
-            updateBeautifier();
+
+            var instance = this;
+
+            this.elTagList = $(this.options.templates.tagList())
+                .appendTo(this.elContainer)
+                .on('click', 'li', function (event) {
+                    instance._addTag($(this).data('tag'));
+                    return false;
+                });
+
+            this.elBeautifier = $(this.options.templates.beautifier()).prependTo(this.elContainer);
+
+            this._initState();
+        },
+
+        /***** PRIVATE *****/
+
+        _initState: function () {
+            var text_with_tags = this._getEditorValue(), initialState = this.parseTaggedText(text_with_tags);
             
-            if (tagsCollection.length > 0) {
-                var addedTags = _.uniq(_.map(tagsCollection, function (tagPos) { return tagPos[3]; }));
-                elEditor.trigger('tagsAdded.textntags', [addedTags]);
+            this.tagsCollection = initialState.tagsCollection;
+            this.elEditor.val(initialState.plain_text);
+            this._updateBeautifier();
+            
+            if (this.tagsCollection.length > 0) {
+                var addedTags = _.uniq(_.map(this.tagsCollection, function (tagPos) { return tagPos[3]; }));
+                this._trigger('tagsAdded', null, [addedTags]); // FIXME: ??
             }
-        }
-        
-        function getEditorValue () {
-            return elEditor.val();
-        }
+        },
 
-        function beautifiedReplace(text) {
-            return text.replace(/\n/g, '<br />&shy;').replace(/ {2}/g, ' &nbsp;');
-        }
-        
-        function pushDiffText(text, diff_text, startPosition, endPosition) {
-            if (currentTagPosition >= startPosition && currentTagPosition < endPosition) {
-                text.push(beautifiedReplace(_.escape(diff_text.substr(0, currentTagPosition - startPosition))),
-                          '<span class="textntags-caret-position"></span>',
-                          beautifiedReplace(_.escape(diff_text.substr(currentTagPosition - startPosition))));
-            } else {
-                text.push(beautifiedReplace(_.escape(diff_text)));
-            }
-        }
+        _getEditorValue: function () {
+            return this.elEditor.val();
+        },
 
-        function getBeautifiedText (tagged_text) {
-            var plain_text = getEditorValue(),
-                position = 0, beautified_text, triggers = settings.triggers;
+        _getBeautifiedText: function () {
+            var plain_text = this._getEditorValue(),
+                position = 0, beautified_text, triggers = this.options.triggers,
+                templates = this.options.templates;
 
-            beautified_text = _.map(tagsCollection, function (tagPos) {
+            beautified_text = _.map(this.tagsCollection, function (tagPos) {
                 var text = [],
                     diff_pos = tagPos[0] - position,
                     diff_text = diff_pos > 0 ? plain_text.substr(position, diff_pos) : '',
@@ -229,7 +240,7 @@
                         class_name: triggers[tagPos[2]].classes.tagHighlight
                     });
                 
-                pushDiffText(text, diff_text, position, tagPos[0]);
+                pushDiffText(text, diff_text, this.currentTagPosition, position, tagPos[0]);
 
                 text.push(tagMarkup);
 
@@ -238,16 +249,17 @@
                 return text.join('');
             });
 
-            pushDiffText(beautified_text, plain_text.substr(position), position, plain_text.length);
+            pushDiffText(beautified_text, plain_text.substr(position), this.currentTagPosition, position,
+                         plain_text.length);
 
             return beautified_text.join('') + '&shy;';
-        }
-        
-        function getTaggedText() {
-            var plain_text = getEditorValue(),
-                position = 0, tagged_text, triggers = settings.triggers;
+        },
 
-            tagged_text = _.map(tagsCollection, function (tagPos) {
+        _getTaggedText: function () {
+            var plain_text = this._getEditorValue(),
+                position = 0, tagged_text, triggers = this.options.triggers;
+
+            tagged_text = _.map(this.tagsCollection, function (tagPos) {
                 var diff_pos = tagPos[0] - position,
                     diff_text = diff_pos > 0 ? plain_text.substr(position, diff_pos) : '',
                     objPropTransformer = transformObjectProperties(triggers[tagPos[2]].keys_map),
@@ -258,14 +270,395 @@
             });
             
             return tagged_text.join('') + plain_text.substr(position);
-        }
-        
-        // it's ready for export
-        function parseTaggedText (tagged_text) {
+        },
+
+        _updateBeautifier: function () {
+            this.elBeautifier.find('div').html(this._getBeautifiedText());
+            var el = this.elBeautifier.find('span.textntags-caret-position');
+
+            if (el.length > 0) {
+                var pos = el.position(), ofs = el.offset();
+                if (ofs.top > ($(document).height() * 0.75)) {
+                    pos = {
+                        top: 'auto',
+                        left: pos.left + 'px',
+                        bottom: (el.offsetParent().height() - pos.top + 30) + 'px'
+                    };
+                } else {
+                    pos = {
+                        top: pos.top + 'px',
+                        left: pos.left + 'px'
+                    };
+                }
+                this.elTagList.css(pos);
+            }
+            this.elEditor.css('height', this.elBeautifier.outerHeight() + 'px');
+        },
+
+        _checkForTrigger: function (look_ahead) {
+            look_ahead = look_ahead || 0;
+            
+            var sStart = utils.getCaretPosition(this.elEditor).start,
+                left_text = this.elEditor.val().substr(0, sStart + look_ahead),
+                found_trigger, found_trigger_char = null, query;
+
+            if (!left_text || !left_text.length) {
+                return;
+            }
+            
+            found_trigger = _.find(this.options.triggers, function (trigger, tchar) {
+                var matches = left_text.match(trigger.finder);
+                if (matches) {
+                    found_trigger_char = tchar;
+                    query = matches[0].substr(tchar.length);
+                    return true;
+                }
+                return false;
+            });
+
+            if (!found_trigger_char || (found_trigger &&(query.length < found_trigger.minChars))) {
+                this._hideTagList();
+            } else {
+                this.currentDataQuery = query;
+                this.currentTriggerChar = found_trigger_char;
+                this.currentTagPosition = left_text.length - query.length - found_trigger_char.length;
+                this._delay(this._searchTags);
+            }
+        },
+
+        _onEditorClick: function (event) {
+            this._checkForTrigger(0);
+        },
+
+        _onEditorKeyDown: function (e) {
+            var keys = KEY, // store in local var for faster lookup
+                selection = utils.getCaretPosition(this.elEditor),
+                sStart = selection.start,
+                sEnd = selection.end,
+                plain_text = this.elEditor.val();
+            
+            this.editorSelectionLength = sEnd - sStart;
+            this.editorTextLength = plain_text.length;
+            this.editorKeyCode = e.keyCode;
+
+            switch (e.keyCode) {
+                case keys.UP:
+                case keys.DOWN:
+                    if (!this.elTagList.is(':visible')) {
+                        return true;
+                    }
+                    
+                    var elCurrentTagListItem = null;
+                    if (e.keyCode == keys.DOWN) {
+                        if (this.elTagListItemActive && this.elTagListItemActive.length) {
+                            this.elCurrentTagListItem = this.elTagListItemActive.next();
+                        } else {
+                            this.elCurrentTagListItem = this.elTagList.find('li').first();
+                        }
+                    } else {
+                        if (this.elTagListItemActive && this.elTagListItemActive.length) {
+                            this.elCurrentTagListItem = this.elTagListItemActive.prev();
+                        } else {
+                            this.elCurrentTagListItem = this.elTagList.find('li').last();
+                        }
+                    }
+
+                    this._selectTagListItem(this.elCurrentTagListItem,
+                                            this.options.triggers[this.currentTriggerChar].classes.tagActiveDropDown);
+                    return false;
+
+                case keys.RETURN:
+                case keys.TAB:
+                    if (this.elTagListItemActive && this.elTagListItemActive.length) {
+						this.editorAddingTag = true;
+                        this.elTagListItemActive.click();
+                        return false;
+                    }
+                    return true;
+
+                case keys.BACKSPACE:
+                case keys['DELETE']:
+                    if (e.keyCode == keys.BACKSPACE && sStart == sEnd && sStart > 0) {
+                        sStart -= 1;
+                    }
+                    if(sEnd > sStart) {
+                        this._removeTagsInRange(sStart, sEnd);
+                        this._shiftTagsPosition(sStart, sStart - sEnd);
+                    }
+                    return true;
+
+                case keys.LEFT:
+                case keys.RIGHT:
+                case keys.HOME:
+                case keys.END:
+                    this._delay(this.checkForTrigger);
+                    break;
+                case keys.V:
+                    // checking for paste
+                    if (e.ctrlKey) {
+                        this.editorInPasteMode = true;
+                        this.editorPasteStartPosition = sStart;
+                        this.editorPasteCutCharacters = sEnd - sStart;
+                        this._removeTagsInRange(sStart, sEnd);
+                    }
+                    break;
+                case keys.Z:
+                    if (e.ctrlKey) {
+                        // forbid undo
+                        return false;
+                    }
+                    break;
+            }
+
+            return true;
+        },
+
+        _onEditorKeyPress: function (e) {
+            if (e.keyCode == KEY.RETURN) {
+                this._updateBeautifier();
+            }
+			if (this.editorAddingTag) {
+				if (e.keyCode == KEY.RETURN || e.keyCode == KEY.TAB) {
+					e.preventDefault();
+				}
+				this.editorAddingTag = false;
+			}
+        },
+
+        _onEditorKeyUp: function (e) {
+            if (this.editorInPasteMode) {
+                this.editorInPasteMode = false;
+
+                if (this.editorSelectionLength > 0) {
+                    return;
+                }
+
+                var selection = utils.getCaretPosition(this.elEditor),
+                    sStart = selection.start,
+                    sEnd = selection.end;
+
+                this._shiftTagsPosition(this.editorPasteStartPosition,
+                                        sEnd - this.editorPasteStartPosition - this.editorPasteCutCharacters);
+                this._updateBeautifier();
+            }
+        },
+
+        _onEditorInput: function (e) {
+            if (this.editorKeyCode != KEY.BACKSPACE && this.editorKeyCode != KEY['DELETE']) {
+                if (this.editorSelectionLength > 0) {
+                    // delete of selection occured
+                    var selection = utils.getCaretPosition(this.elEditor),
+                        sStart = selection.start,
+                        selectionLength = this.editorSelectionLength,
+                        sEnd = sStart + selectionLength,
+                        tags_shift_positions = this.elEditor.val().length - this.editorTextLength;
+                    this._removeTagsInRange(sStart, sEnd);
+                    this._shiftTagsPosition(sEnd, tags_shift_positions);
+                } else if (!this.editorInPasteMode) {
+                    // char input - shift with 1
+                    var selection = utils.getCaretPosition(this.elEditor),
+                        sStart = selection.start,
+                        sEnd = selection.end,
+                        selectionLength = sEnd - sStart;
+
+                    if (this.editorKeyCode == KEY.RETURN) {
+                        this._shiftTagsPosition(sStart - 1, 1);
+                        this._removeTagsInRange(sStart, sStart);
+                    } else {
+                        this._shiftTagsPosition(sStart, 1);
+                        this._removeTagsInRange(sStart, sStart + 1);
+                    }
+                }
+            }
+            
+            this._updateBeautifier();
+            
+            this._checkForTrigger(1);
+        },
+
+        _onEditorBlur: function (e) {
+            this._delay(this._hideTagList, 100);
+        },
+
+        _hideTagList: function () {
+            this.elTagListItemActive = null;
+            this.elTagList.hide().empty();
+        },
+
+        _removeTagsInRange: function (start, end) {
+            var removedTags = [];
+            this.tagsCollection = _.filter(this.tagsCollection, function (tagPos) {
+                var s = tagPos[0], e = s + tagPos[1],
+                    inRange = ((s >= start && s < end) || (e > start && e <= end) || (s < start && e > end));
+                if (inRange) {
+                    removedTags.push(tagPos[3]);
+                }
+                return !inRange;
+            });
+            
+            if (removedTags.length > 0) {
+                this._trigger('tagsRemoved', null, [removedTags]); // FIXME: ??
+            }
+        },
+
+        _shiftTagsPosition: function (afterPosition, position_shift) {
+            // FIXME: _.each(...) instead?
+            this.tagsCollection = _.map(this.tagsCollection, function (tagPos) {
+                if (tagPos[0] >= afterPosition) {
+                    tagPos[0] += position_shift;
+                }
+                return tagPos;
+            });
+        },
+
+        _addTag: function (tag) {
+            var trigger = this.options.triggers[this.currentTriggerChar],
+                objPropTransformer = transformObjectProperties(trigger.keys_map),
+                localTag = objPropTransformer(tag, false),
+                plain_text = this._getEditorValue(),
+                sStart = utils.getCaretPosition(this.elEditor).start,
+                tagStart = sStart - this.currentTriggerChar.length - this.currentDataQuery.length,
+                newCaretPosition = tagStart + localTag.title.length,
+                left_text = plain_text.substr(0, tagStart),
+                right_text = plain_text.substr(sStart),
+                new_text = left_text + localTag.title + right_text;
+
+            // shift the tags after the current new one
+            this._shiftTagsPosition(sStart, newCaretPosition - sStart);
+
+            // explicitly convert to string for comparisons later
+            tag[trigger.keys_map.id] = '' + tag[trigger.keys_map.id];
+            
+            this.tagsCollection.push([tagStart, localTag.title.length, this.currentTriggerChar, tag]);
+            this.tagsCollection = _.sortBy(this.tagsCollection, function (t) { return t[0]; });
+            
+            this.currentTriggerChar = '';
+            this.currentDataQuery = '';
+            this._hideTagList();
+            
+            this.elEditor.val(new_text);
+            this._updateBeautifier();
+
+            this.elEditor.focus();
+            utils.setCaretPosition(this.elEditor, newCaretPosition);
+            
+            this._trigger('tagsAdded', null, [[tag]]); // FIXME: ??
+        },
+
+        _selectTagListItem: function (tagItem, class_name) {
+            if (tagItem && tagItem.length) {
+                tagItem.addClass(class_name);
+                tagItem.siblings().removeClass(class_name);
+                this.elTagListItemActive = tagItem;
+            } else {
+                this.elTagListItemActive.removeClass(class_name);
+                this.elTagListItemActive = null;
+            }
+        },
+
+        _populateTagList: function (query, triggerChar, results) {
+            var trigger = this.options.triggers[triggerChar],
+                templates = this.options.templates;
+            
+            this._updateBeautifier();
+
+            if (trigger.uniqueTags) {
+                // Filter items that has already been mentioned
+                var id_key = trigger.keys_map.id,
+                    tagIds = _.map(this.tagsCollection, function (tagPos) { return tagPos[3][id_key]; });
+                results = _.reject(results, function (item) {
+                    // converting to string ids
+                    return _.include(tagIds, '' + item[id_key]);
+                });
+            }
+
+            if (!results.length) {
+                return;
+            }
+
+            var tagsDropDown = $("<ul />").addClass(trigger.classes.tagsDropDown).appendTo(this.elTagList),
+                imgOrIconTpl = trigger.showImageOrIcon ?  templates.tagsListItemImage : templates.tagsListItemIcon,
+                objPropTransformer = transformObjectProperties(trigger.keys_map),
+                instance = this;
+
+            _.each(results, function (tag, index) {
+                var tagItem, localTag = objPropTransformer(tag, false);
+                localTag.title = utils.highlightTerm(utils.htmlEncode(localTag.title), query);
+                tagItem = $(templates.tagsListItem(localTag)).data('tag', tag);
+                if (localTag.img) {
+                    tagItem = tagItem.prepend(imgOrIconTpl(localTag));
+                }
+                tagItem.appendTo(tagsDropDown);
+
+                if (index === 0) { 
+                    instance._selectTagListItem(tagItem, trigger.classes.tagActiveDropDown);
+                }
+            });
+
+            this.elTagList.show();
+        },
+
+        _searchTags: function () {
+            var instance = this,
+                query = this.currentDataQuery,
+                triggerChar = this.currentTriggerChar;
+
+            this._hideTagList();
+            this.options.onDataRequest.call(
+                this, 'search', query, triggerChar,
+                function (responseData) {
+                    instance._populateTagList(query, triggerChar, responseData);
+                }
+            );
+        },
+
+        /***** PUBLIC *****/
+
+        value: function (newValue) {
+            if (_.isString(newValue)) {
+                var removedTags = _.uniq(_.map(this.tagsCollection, function (tagPos) { return tagPos[3]; }));
+                this._trigger('tagsRemoved', null, [removedTags]); // FIXME: ??
+                this.elEditor.val(newValue);
+                this._initState();
+                return;
+            } else {
+                return this.tagsCollection.length ? this._getTaggedText() : this._getEditorValue();
+            }
+        },
+
+        getTags: function () {
+            var tags = _.map(this.tagsCollection, function (tagPos) { return tagPos[3]; });
+
+            return _.uniq(tags);
+        },
+
+        getTagsMap: function () {
+            return this.tagsCollection;
+        },
+
+        getTagsMapFacebook: function () {
+            var fbTagsCollection = {}, triggers = this.options.triggers;
+                
+            _.each(this.tagsCollection, function (tagPos) {
+                var objPropTransformer = transformObjectProperties(triggers[tagPos[2]].keys_map),
+                    localTag = objPropTransformer(tagPos[3], false);
+                fbTagsCollection[tagPos[0]] = [{
+                    id: localTag.id,
+                    name: localTag.title,
+                    type: localTag.type,
+                    offset: tagPos[0],
+                    length: tagPos[1]
+                }];
+            });
+
+            return fbTagsCollection;
+        },
+
+        parseTaggedText: function (tagged_text) {
             if (_.isString(tagged_text) == false) {
                 return null;
             } 
-            var plain_text = '' + tagged_text, tagsColl = [], triggers = settings.triggers;
+            var plain_text = '' + tagged_text, tagsColl = [], triggers = this.options.triggers;
             
             _.each(triggers, function (opts, tchar) {
                 var parts = tagged_text.split(opts.parser),
@@ -305,412 +698,6 @@
                 tagsCollection: tagsColl
             };
         }
-        
-        function updateBeautifier () {
-            elBeautifier.find('div').html(getBeautifiedText());
-            var el = elBeautifier.find('span.textntags-caret-position');
-
-            if (el.length > 0) {
-                var pos = el.position(), ofs = el.offset();
-                if (ofs.top > ($(document).height() * 0.75)) {
-                    pos = {
-                        top: 'auto',
-                        left: pos.left + 'px',
-                        bottom: (el.offsetParent().height() - pos.top + 30) + 'px'
-                    };
-                } else {
-                    pos = {
-                        top: pos.top + 'px',
-                        left: pos.left + 'px'
-                    };
-                }
-                elTagList.css(pos);
-            }
-            elEditor.css('height', elBeautifier.outerHeight() + 'px');
-        }
-        
-        function checkForTrigger(look_ahead) {
-            look_ahead = look_ahead || 0;
-            
-            var sStart = utils.getCaretPosition(elEditor).start,
-                left_text = elEditor.val().substr(0, sStart + look_ahead),
-                found_trigger, found_trigger_char = null, query;
-
-            if (!left_text || !left_text.length) {
-                return;
-            }
-            
-            found_trigger = _.find(settings.triggers, function (trigger, tchar) {
-                var matches = left_text.match(trigger.finder);
-                if (matches) {
-                    found_trigger_char = tchar;
-                    query = matches[0].substr(tchar.length);
-                    return true;
-                }
-                return false;
-            });
-
-            if (!found_trigger_char || (found_trigger &&(query.length < found_trigger.minChars))) {
-                hideTagList();
-            } else {
-                currentDataQuery = query;
-                currentTriggerChar = found_trigger_char;
-                currentTagPosition = left_text.length - query.length - found_trigger_char.length;
-                _.defer(_.bind(searchTags, this, currentDataQuery, found_trigger_char));
-            }
-        }
-        
-        function onEditorClick (e) {
-            checkForTrigger(0);
-        }
-        
-        function onEditorKeyDown (e) {
-            var keys = KEY, // store in local var for faster lookup
-                selection = utils.getCaretPosition(elEditor),
-                sStart = selection.start,
-                sEnd = selection.end,
-                plain_text = elEditor.val();
-            
-            editorSelectionLength = sEnd - sStart;
-            editorTextLength = plain_text.length;
-            editorKeyCode = e.keyCode;
-
-            switch (e.keyCode) {
-                case keys.UP:
-                case keys.DOWN:
-                    if (!elTagList.is(':visible')) {
-                        return true;
-                    }
-                    
-                    var elCurrentTagListItem = null;
-                    if (e.keyCode == keys.DOWN) {
-                        if (elTagListItemActive && elTagListItemActive.length) {
-                            elCurrentTagListItem = elTagListItemActive.next();
-                        } else {
-                            elCurrentTagListItem = elTagList.find('li').first();
-                        }
-                    } else {
-                        if (elTagListItemActive && elTagListItemActive.length) {
-                            elCurrentTagListItem = elTagListItemActive.prev();
-                        } else {
-                            elCurrentTagListItem = elTagList.find('li').last();
-                        }
-                    }
-
-                    selectTagListItem(elCurrentTagListItem, settings.triggers[currentTriggerChar].classes.tagActiveDropDown);
-                    return false;
-
-                case keys.RETURN:
-                case keys.TAB:
-                    if (elTagListItemActive && elTagListItemActive.length) {
-						editorAddingTag = true;
-                        elTagListItemActive.click();
-                        return false;
-                    }
-                    return true;
-
-                case keys.BACKSPACE:
-                case keys['DELETE']:
-                    if (e.keyCode == keys.BACKSPACE && sStart == sEnd && sStart > 0) {
-                        sStart -= 1;
-                    }
-                    if(sEnd > sStart) {
-                        removeTagsInRange(sStart, sEnd);
-                        shiftTagsPosition(sStart, sStart - sEnd);
-                    }
-                    return true;
-
-                case keys.LEFT:
-                case keys.RIGHT:
-                case keys.HOME:
-                case keys.END:
-                    _.defer(function () { checkForTrigger.call(this, 0); });
-                    break;
-                case keys.V:
-                    // checking for paste
-                    if (e.ctrlKey) {
-                        editorInPasteMode = true;
-                        editorPasteStartPosition = sStart;
-                        editorPasteCutCharacters = sEnd - sStart;
-                        removeTagsInRange(sStart, sEnd);
-                    }
-                    break;
-                case keys.Z:
-                    if (e.ctrlKey) {
-                        // forbid undo
-                        return false;
-                    }
-                    break;
-            }
-
-            return true;
-        }
-        
-        function onEditorKeyPress (e) {
-            if (e.keyCode == KEY.RETURN) {
-                updateBeautifier(elEditor.val());
-            }
-			if (editorAddingTag) {
-				if (e.keyCode == KEY.RETURN || e.keyCode == KEY.TAB) {
-					e.preventDefault();
-				}
-				editorAddingTag = false;
-			}
-        }
-
-        function onEditorKeyUp (e) {
-            if (editorInPasteMode) {
-                editorInPasteMode = false;
-
-                if (editorSelectionLength > 0) {
-                    return;
-                }
-
-                var selection = utils.getCaretPosition(elEditor),
-                    sStart = selection.start,
-                    sEnd = selection.end;
-
-                shiftTagsPosition(editorPasteStartPosition, sEnd - editorPasteStartPosition - editorPasteCutCharacters);
-                updateBeautifier();
-            }
-        }
-        
-        function onEditorInput (e) {
-            if (editorKeyCode != KEY.BACKSPACE && editorKeyCode != KEY['DELETE']) {
-                if (editorSelectionLength > 0) {
-                    // delete of selection occured
-                    var selection = utils.getCaretPosition(elEditor),
-                        sStart = selection.start,
-                        selectionLength = editorSelectionLength,
-                        sEnd = sStart + selectionLength,
-                        tags_shift_positions = elEditor.val().length - editorTextLength;
-                    removeTagsInRange(sStart, sEnd);
-                    shiftTagsPosition(sEnd, tags_shift_positions);
-                } else if (!editorInPasteMode) {
-                    // char input - shift with 1
-                    var selection = utils.getCaretPosition(elEditor),
-                        sStart = selection.start,
-                        sEnd = selection.end,
-                        selectionLength = sEnd - sStart;
-
-                    if (editorKeyCode == KEY.RETURN) {
-                        shiftTagsPosition(sStart - 1, 1);
-                        removeTagsInRange(sStart, sStart);
-                    } else {
-                        shiftTagsPosition(sStart, 1);
-                        removeTagsInRange(sStart, sStart + 1);
-                    }
-                }
-            }
-            
-            updateBeautifier();
-            
-            checkForTrigger(1);
-        }
-        
-        function onEditorBlur (e) {
-            _.delay(hideTagList, 100);
-        }
-        
-        function hideTagList () {
-            elTagListItemActive = null;
-            elTagList.hide().empty();
-        }
-        
-        function onTagListItemClick (e) {
-            addTag($(this).data('tag'));
-            return false;
-        }
-        
-        function removeTagsInRange (start, end) {
-            var removedTags = [];
-            tagsCollection = _.filter(tagsCollection, function (tagPos) {
-                var s = tagPos[0], e = s + tagPos[1],
-                    inRange = ((s >= start && s < end) || (e > start && e <= end) || (s < start && e > end));
-                if (inRange) {
-                    removedTags.push(tagPos[3]);
-                }
-                return !inRange;
-            });
-            
-            if (removedTags.length > 0) {
-                elEditor.trigger('tagsRemoved.textntags', [removedTags]);
-            }
-        }
-        
-        function shiftTagsPosition (afterPosition, position_shift) {
-            tagsCollection = _.map(tagsCollection, function (tagPos) {
-                if (tagPos[0] >= afterPosition) {
-                    tagPos[0] += position_shift;
-                }
-                return tagPos;
-            });
-        }
-        
-        function addTag (tag) {
-            var trigger = settings.triggers[currentTriggerChar],
-                objPropTransformer = transformObjectProperties(trigger.keys_map),
-                localTag = objPropTransformer(tag, false),
-                plain_text = getEditorValue(),
-                sStart = utils.getCaretPosition(elEditor).start,
-                tagStart = sStart - currentTriggerChar.length - currentDataQuery.length,
-                newCaretPosition = tagStart + localTag.title.length,
-                left_text = plain_text.substr(0, tagStart),
-                right_text = plain_text.substr(sStart),
-                new_text = left_text + localTag.title + right_text;
-
-            // shift the tags after the current new one
-            shiftTagsPosition(sStart, newCaretPosition - sStart);
-
-            // explicitly convert to string for comparisons later
-            tag[trigger.keys_map.id] = '' + tag[trigger.keys_map.id];
-            
-            tagsCollection.push([tagStart, localTag.title.length, currentTriggerChar, tag]);
-            tagsCollection = _.sortBy(tagsCollection, function (t) { return t[0]; });
-            
-            currentTriggerChar = '';
-            currentDataQuery = '';
-            hideTagList();
-            
-            elEditor.val(new_text);
-            updateBeautifier();
-
-            elEditor.focus();
-            utils.setCaretPosition(elEditor, newCaretPosition);
-            
-            elEditor.trigger('tagsAdded.textntags', [[tag]]);
-        }
-        
-        function selectTagListItem (tagItem, class_name) {
-            if (tagItem && tagItem.length) {
-                tagItem.addClass(class_name);
-                tagItem.siblings().removeClass(class_name);
-                elTagListItemActive = tagItem;
-            } else {
-                elTagListItemActive.removeClass(class_name);
-                elTagListItemActive = null;
-            }
-        }
-        
-        function populateTagList (query, triggerChar, results) {
-            var trigger = settings.triggers[triggerChar];
-            
-            updateBeautifier();
-
-            if (trigger.uniqueTags) {
-                // Filter items that has already been mentioned
-                var id_key = trigger.keys_map.id, tagIds = _.map(tagsCollection, function (tagPos) { return tagPos[3][id_key]; });
-                results = _.reject(results, function (item) {
-                    // converting to string ids
-                    return _.include(tagIds, '' + item[id_key]);
-                });
-            }
-
-            if (!results.length) {
-                return;
-            }
-
-            var tagsDropDown = $("<ul />").addClass(trigger.classes.tagsDropDown).appendTo(elTagList),
-                imgOrIconTpl = trigger.showImageOrIcon ? templates.tagsListItemImage : templates.tagsListItemIcon,
-                objPropTransformer = transformObjectProperties(trigger.keys_map);
-
-            _.each(results, function (tag, index) {
-                var tagItem, localTag = objPropTransformer(tag, false);
-                localTag.title = utils.highlightTerm(utils.htmlEncode((localTag.title)), query);
-                tagItem = $(templates.tagsListItem(localTag)).data('tag', tag);
-                if(localTag.img) {
-                  tagItem = tagItem.prepend(imgOrIconTpl(localTag));
-                }
-                tagItem.appendTo(tagsDropDown);
-
-                if (index === 0) { 
-                    selectTagListItem(tagItem, trigger.classes.tagActiveDropDown);
-                }
-            });
-
-            elTagList.show();
-        }
-        
-        function searchTags (query, triggerChar) {
-            hideTagList();
-            settings.onDataRequest.call(this, 'search', query, triggerChar, function (responseData) {
-                populateTagList(query, triggerChar, responseData);
-            });
-        }
-        
-        // Public methods
-        return {
-            init : function (options) {
-                if (setSettings(options)) {
-                    initTextarea();
-                    initTagList();
-                    initBeautifier();
-                    initState();
-                }
-            },
-            val : function (value) {
-                if (_.isString(value)) {
-                    var removedTags = _.uniq(_.map(tagsCollection, function (tagPos) { return tagPos[3]; }));
-                    elEditor.trigger('tagsRemoved.textntags', [removedTags]);
-                    elEditor.val(value);
-                    initState();
-                    return;
-                } else {
-                    return tagsCollection.length ? getTaggedText() : getEditorValue();
-                }
-            },
-            reset : function () {
-                var removedTags = _.uniq(_.map(tagsCollection, function (tagPos) { return tagPos[3]; }));
-                elEditor.trigger('tagsRemoved.textntags', [removedTags]);
-                elEditor.val('');
-                tagsCollection = [];
-                updateBeautifier();
-            },
-            getTags : function () {
-                var tags = _.map(tagsCollection, function (tagPos) { return tagPos[3]; });
-
-                return _.uniq(tags);
-            },
-            getTagsMap : function () {
-                return tagsCollection;
-            },
-            getTagsMapFacebook : function () {
-				var fbTagsCollection = {}, triggers = settings.triggers;
-					
-				_.each(tagsCollection, function (tagPos) {
-					var objPropTransformer = transformObjectProperties(triggers[tagPos[2]].keys_map),
-						localTag = objPropTransformer(tagPos[3], false);
-					fbTagsCollection[tagPos[0]] = [{
-						id: localTag.id,
-						name: localTag.title,
-						type: localTag.type,
-						offset: tagPos[0],
-						length: tagPos[1]
-					}];
-				});
-
-                return fbTagsCollection;
-            },
-            parseTaggedText: function (tagged_text) {
-                return parseTaggedText(tagged_text);
-            }
-        };
-    };
-    
-    $.fn.textntags = function (methodOrSettings) {
-        var outerArguments = arguments;
-
-        return this.each(function () {
-            var ms = methodOrSettings, instance = $.data(this, 'textntags') || $.data(this, 'textntags', new TextNTags(this));
-
-            if (_.isFunction(instance[ms])) {
-                return instance[ms].apply(this, Array.prototype.slice.call(outerArguments, 1));
-            } else if (typeof ms === 'object' || !ms) {
-                return instance.init.call(this, ms);
-            } else {
-                $.error('Method ' + ms + ' does not exist');
-            }
-        });
-    };
+    });
 
 })(jQuery, _);
