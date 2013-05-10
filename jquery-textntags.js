@@ -3,7 +3,7 @@
  * Version 0.1.2
  * Written by: Daniel Zahariev
  *
- * Dependencies: jQuery, jQuery.widget(), underscore.js
+ * Dependencies: jQuery, jQuery.widget(), jQuery.position() (from jQuery UI), underscore.js
  *
  * License: MIT License - http://www.opensource.org/licenses/mit-license.php
  */
@@ -137,8 +137,8 @@
     function pushDiffText(text, diff_text, currentTagPosition, startPosition, endPosition) {
         if (currentTagPosition >= startPosition && currentTagPosition < endPosition) {
             text.push(beautifiedReplace(_.escape(diff_text.substr(0, currentTagPosition - startPosition))),
-                      '<span class="textntags-caret-position"></span>',
-                      beautifiedReplace(_.escape(diff_text.substr(currentTagPosition - startPosition))));
+                      '<span class="textntags-caret-position">', diff_text[currentTagPosition], '</span>',
+                      beautifiedReplace(_.escape(diff_text.substr(currentTagPosition - startPosition + 1))));
         } else {
             text.push(beautifiedReplace(_.escape(diff_text)));
         }
@@ -274,24 +274,6 @@
 
         _updateBeautifier: function () {
             this.elBeautifier.find('div').html(this._getBeautifiedText());
-            var el = this.elBeautifier.find('span.textntags-caret-position');
-
-            if (el.length > 0) {
-                var pos = el.position(), ofs = el.offset();
-                if (ofs.top > ($(document).height() * 0.75)) {
-                    pos = {
-                        top: 'auto',
-                        left: pos.left + 'px',
-                        bottom: (el.offsetParent().height() - pos.top + 30) + 'px'
-                    };
-                } else {
-                    pos = {
-                        top: pos.top + 'px',
-                        left: pos.left + 'px'
-                    };
-                }
-                this.elTagList.css(pos);
-            }
             this.elEditor.css('height', this.elBeautifier.outerHeight() + 'px');
         },
 
@@ -596,6 +578,9 @@
             });
 
             this.elTagList.show();
+            this.elTagList.position({
+                my: 'left top', at: 'left bottom+2', of: this.elBeautifier.find('span.textntags-caret-position')
+            });
         },
 
         _searchTags: function () {
