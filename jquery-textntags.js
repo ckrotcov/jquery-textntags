@@ -196,7 +196,7 @@
 
             this.elTagList = $(this.options.templates.tagList())
                 .appendTo(this.elContainer)
-                .on('click', 'li', function (event) {
+                .on('mousedown', 'li', function (event) {
                     instance._addTag($(this).data('tag'));
                     return false;
                 });
@@ -353,7 +353,7 @@
                 case keys.TAB:
                     if (this.elTagListItemActive && this.elTagListItemActive.length) {
 						this.editorAddingTag = true;
-                        this.elTagListItemActive.click();
+                        this.elTagListItemActive.trigger('mousedown');
                         return false;
                     }
                     return true;
